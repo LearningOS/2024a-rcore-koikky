@@ -5,22 +5,28 @@ use crate::{
     timer::get_time_us,
 };
 
+use crate::task::TASK_MANAGER;
+
 #[repr(C)]
 #[derive(Debug)]
+/// The
 pub struct TimeVal {
+    /// Seconds part of the time
     pub sec: usize,
+    /// Microseconds part of the time
     pub usec: usize,
 }
 
 /// Task information
 #[allow(dead_code)]
+#[derive(Copy, Clone)]
 pub struct TaskInfo {
     /// Task status in it's life cycle
-    status: TaskStatus,
+    pub status: TaskStatus,
     /// The numbers of syscall called by task
-    syscall_times: [u32; MAX_SYSCALL_NUM],
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
     /// Total running time of task
-    time: usize,
+    pub time: usize,
 }
 
 /// task exits and submit an exit code
@@ -53,5 +59,17 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 /// YOUR JOB: Finish sys_task_info to pass testcases
 pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
     trace!("kernel: sys_task_info");
-    -1
+    // Your implementation here
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let num = inner.current_task;
+    let task = &mut inner.tasks[num];
+    //task.task_info.syscall_times[169] +=4;
+    unsafe {
+        (*_ti).status = task.task_info.status;
+        (*_ti).syscall_times = task.task_info.syscall_times;
+        (*_ti).time = task.task_info.time;
+        //println!("SYSCALL_GETTIMEOFDAY:{}",(*_ti).syscall_times[169]);
+    }
+    drop(inner);
+    0
 }
