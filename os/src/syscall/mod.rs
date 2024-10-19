@@ -25,22 +25,67 @@ const SYSCALL_MMAP: usize = 222;
 /// taskinfo syscall
 const SYSCALL_TASK_INFO: usize = 410;
 
+use crate::{task::TASK_MANAGER, timer::get_time_ms};
+
 mod fs;
-mod process;
+pub mod process;
 
 use fs::*;
 use process::*;
 /// handle syscall exception with `syscall_id` and other arguments
 pub fn syscall(syscall_id: usize, args: [usize; 3]) -> isize {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let num = inner.current_task;
+    let task = &mut inner.tasks[num];
     match syscall_id {
-        SYSCALL_WRITE => sys_write(args[0], args[1] as *const u8, args[2]),
-        SYSCALL_EXIT => sys_exit(args[0] as i32),
-        SYSCALL_YIELD => sys_yield(),
-        SYSCALL_GET_TIME => sys_get_time(args[0] as *mut TimeVal, args[1]),
-        SYSCALL_TASK_INFO => sys_task_info(args[0] as *mut TaskInfo),
-        SYSCALL_MMAP => sys_mmap(args[0], args[1], args[2]),
-        SYSCALL_MUNMAP => sys_munmap(args[0], args[1]),
-        SYSCALL_SBRK => sys_sbrk(args[0] as i32),
+        SYSCALL_WRITE => {
+            task.task_info.syscall_times[SYSCALL_WRITE] += 1;
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_write(args[0], args[1] as *const u8, args[2])
+        },
+        SYSCALL_EXIT => {
+            task.task_info.syscall_times[SYSCALL_EXIT] += 1;
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_exit(args[0] as i32)
+        },
+        SYSCALL_YIELD => { 
+            task.task_info.syscall_times[SYSCALL_YIELD] += 1; 
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_yield()
+        },
+        SYSCALL_GET_TIME => {
+            task.task_info.syscall_times[SYSCALL_GET_TIME] += 1;
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_get_time(args[0] as *mut TimeVal, args[1])
+        },
+        SYSCALL_TASK_INFO => {
+            task.task_info.syscall_times[SYSCALL_TASK_INFO] += 1;
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_task_info(args[0] as *mut TaskInfo)
+        },
+        SYSCALL_MMAP => {
+            task.task_info.syscall_times[SYSCALL_MMAP] += 1;
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_mmap(args[0], args[1], args[2])
+        },
+        SYSCALL_MUNMAP => {
+            task.task_info.syscall_times[SYSCALL_GET_TIME] += 1;
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_munmap(args[0], args[1])
+        },
+        SYSCALL_SBRK => {
+            task.task_info.syscall_times[SYSCALL_SBRK] += 1;
+            task.task_info.time = get_time_ms() - task.task_first_time;
+            drop(inner);
+            sys_sbrk(args[0] as i32)
+        },
         _ => panic!("Unsupported syscall_id: {}", syscall_id),
     }
 }
