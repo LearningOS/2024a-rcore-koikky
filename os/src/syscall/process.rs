@@ -3,7 +3,7 @@
 // use alloc::vec::{self, Vec};
 
 use crate::{
-    config::{MAX_SYSCALL_NUM, PAGE_SIZE}, mm::{frame_alloc, PTEFlags, VirtAddr}, task::{
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE}, mm::{VirtAddr,MapPermission,VPNRange,VirtPageNum}, task::{
         change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus, TASK_MANAGER,
     }, timer::get_time_us
 };
@@ -89,39 +89,62 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
+    if _start % 4096 != 0 {
+        return -1
+    }
     let mut inner = TASK_MANAGER.inner.exclusive_access();
     let num = inner.current_task;
-    if num != 17 {  
-        if _start % 4096 != 0 || _len % 4096 != 0 || _port >3 ||  _port ==0 {return -1}
-    } else {
-        if _start % 4096 != 0 || _port >3 ||  _port ==0 {return -1}
+    let va_s:VirtAddr = _start.into();
+    let va_e:VirtAddr = (_start + _len).into();
+    let range = VPNRange::new(va_s.floor(), va_e.ceil());
+    for va in range {
+        if let Some(pte) = inner.tasks[num].memory_set.page_table.translate(va) {
+            if pte.is_valid() == true {
+                return -1;
+            } 
+        } 
     }
-    let pt = &mut inner.tasks[num].memory_set.page_table;
-    let count = _len / 4096;
-    // let addr_vec:Vec<PhysPageNum> = Vec::new();
-    for x in 0..count {
-        let frame = frame_alloc().unwrap();
-        let ppn = frame.ppn;
-        // addr_vec.push(ppn);
-        let j = _start + x * 4096;
-        let i:VirtAddr = j.into();
-        let pte_flags = PTEFlags::from_bits(((_port << 1) | 16) as u8).unwrap();
-        pt.map(i.floor(), ppn, pte_flags);
-    }
-    
+    let i:MapPermission = MapPermission::U ;
+    let mut j:MapPermission = i;
+    match _port {
+        1 => j = i | MapPermission::R,
+        2 => j = i | MapPermission::W,
+        3 => j = i | MapPermission::R | MapPermission::W,
+        4 => j = i | MapPermission::X,
+        5 => j = i | MapPermission::X | MapPermission::R,
+        6 => j = i | MapPermission::X | MapPermission::W,
+        7 => j = i | MapPermission::X | MapPermission::R | MapPermission::W,
+        _ => return -1,
+    };
+    inner.tasks[num].memory_set.insert_framed_area(va_s,va_e,j);   
     0
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    // if _start % 4096 != 0 || _len % 4096 != 0 {return -1}
-    // let mut inner = TASK_MANAGER.inner.exclusive_access();
-    // let num = inner.current_task;
-    // let pt = &mut inner.tasks[num].memory_set.page_table;
-    if _start % 4096 != 0 || _len % 4096 != 0 {return -1}
-    0
+    if _start % 4096 != 0 {
+        return -1
+    }
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let num = inner.current_task;
+    let va_s:VirtAddr = _start.into();
+    let va_e:VirtAddr = (_start + _len).into();
+    let vpn_s:VirtPageNum = va_s.floor();
+    let vpn_e:VirtPageNum = va_e.ceil();
+    let set = &mut inner.tasks[num].memory_set;
+    let mut x = &mut set.areas;
+    let mut pt = &mut set.page_table;
+    for area in x.iter_mut() {
+        if vpn_e <=  area.vpn_range.get_end() && vpn_s >= area.vpn_range.get_start() {
+            for i in vpn_s.0..vpn_e.0 {
+                area.unmap_one(&mut pt, VirtPageNum(i));
+            }
+            return 0;
+        } else {
+            continue;
+        }
+    }
+    -1
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {

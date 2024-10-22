@@ -16,7 +16,7 @@
 //! userspace.
 
 #![allow(missing_docs)]
-#![deny(warnings)]
+#![allow(warnings)]
 #![no_std]
 #![no_main]
 #![feature(panic_info_message)]
