@@ -5,12 +5,15 @@
 //! and the replacement and transfer of control flow of different applications are executed.
 
 use super::__switch;
-use super::{fetch_task, TaskStatus};
+use super::{fetch_task, add_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
+
+use crate::task::BIGSTRIDE;
+use alloc::vec::Vec;
 
 /// Processor management structure
 pub struct Processor {
@@ -53,12 +56,44 @@ lazy_static! {
 ///The main part of process execution and scheduling
 ///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
 pub fn run_tasks() {
+    let mut task_vec:Vec<Arc<TaskControlBlock>> = Vec::new();
     loop {
         let mut processor = PROCESSOR.exclusive_access();
-        if let Some(task) = fetch_task() {
+        while let Some(task_que) = fetch_task() {
+            task_vec.push(task_que);
+        }
+        if task_vec.len() !=0 {
+            for (z,q) in task_vec.iter().enumerate() {
+                if q.inner_exclusive_access().stride == unsafe { BIGSTRIDE } {
+                    continue;
+                } else {
+                    break;
+                }
+                if z == task_vec.len() {
+                    for m in task_vec.iter_mut() {
+                        m.inner_exclusive_access().stride = 0;
+                    }
+                }
+            }
+            let mut num:usize = 0;
+            let mut index:usize = task_vec[0].inner_exclusive_access().stride;
+            for (i,tasks) in task_vec.iter().enumerate() {
+                let sid = tasks.inner_exclusive_access().stride;
+                if index > sid {
+                    index = sid;
+                    num = i;
+                }
+            }
+            let task = task_vec.remove(num);
+            for j in 0..task_vec.len() {
+                let temp = task_vec[j].clone();
+                add_task(temp);
+            }
+            task_vec.clear();
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
             // access coming task TCB exclusively
             let mut task_inner = task.inner_exclusive_access();
+            task_inner.stride += task_inner.pass;
             let next_task_cx_ptr = &task_inner.task_cx as *const TaskContext;
             task_inner.task_status = TaskStatus::Running;
             // release coming task_inner manually

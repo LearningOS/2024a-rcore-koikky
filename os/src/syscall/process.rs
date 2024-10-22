@@ -1,14 +1,17 @@
 //! Process management syscalls
+// use core::marker::Tuple;
+
 use alloc::sync::Arc;
+use riscv::paging::PTE;
 
 use crate::{
     config::MAX_SYSCALL_NUM,
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, MapPermission, VirtAddr,VPNRange,VirtPageNum},
     task::{
-        add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
+        add_task, current_task, current_user_token, exit_current_and_run_next, suspend_current_and_run_next, TaskControlBlock, TaskStatus, BIGSTRIDE
     },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -118,11 +121,19 @@ pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 /// HINT: What if [`TimeVal`] is splitted by two pages ?
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    trace!("kernel: sys_get_time");
+    let addr = _ts as usize;
+    let vir_addr:VirtAddr = addr.into();
+    let us = get_time_us();
+    let task_cur = current_task().unwrap();
+    let inner = task_cur.inner_exclusive_access();
+    let phy_addr = inner.memory_set.translate_va(vir_addr).unwrap();
+    let ptr = phy_addr.0 as *mut TimeVal;
+    unsafe {
+        (*ptr).sec = us / 1_000_000;
+        (*ptr).usec = us % 1_000_000;
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -138,19 +149,61 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
 
 /// YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    if _start % 4096 != 0 {
+        return -1
+    }
+    let task_cur = current_task().unwrap();
+    let inner = & mut task_cur.inner_exclusive_access();
+    let va_s:VirtAddr = _start.into();
+    let va_e:VirtAddr = (_start + _len).into();
+    let range = VPNRange::new(va_s.floor(), va_e.ceil());
+    for va in range {
+        if let Some(pte) = inner.memory_set.page_table.translate(va) {
+            if pte.is_valid() == true {
+                return -1;
+            } 
+        } 
+    }
+    let i:MapPermission = MapPermission::U ;
+    let mut j:MapPermission = i;
+    match _port {
+        1 => j = i | MapPermission::R,
+        2 => j = i | MapPermission::W,
+        3 => j = i | MapPermission::R | MapPermission::W,
+        4 => j = i | MapPermission::X,
+        5 => j = i | MapPermission::X | MapPermission::R,
+        6 => j = i | MapPermission::X | MapPermission::W,
+        7 => j = i | MapPermission::X | MapPermission::R | MapPermission::W,
+        _ => return -1,
+    };
+    inner.memory_set.insert_framed_area(va_s,va_e,j);   
+    0
 }
 
 /// YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
+    if _start % 4096 != 0 {
+        return -1
+    }
+    let task_cur = current_task().unwrap();
+    let mut inner = & mut task_cur.inner_exclusive_access();
+    let va_s:VirtAddr = _start.into();
+    let va_e:VirtAddr = (_start + _len).into();
+    let vpn_s:VirtPageNum = va_s.floor();
+    let vpn_e:VirtPageNum = va_e.ceil();
+    let set = &mut inner.memory_set;
+    let mut x = &mut set.areas;
+    let mut pt = &mut set.page_table;
+    for area in x.iter_mut() {
+        if vpn_e <=  area.vpn_range.get_end() && vpn_s >= area.vpn_range.get_start() {
+            for i in vpn_s.0..vpn_e.0 {
+                area.unmap_one(&mut pt, VirtPageNum(i));
+            }
+            return 0;
+        } else {
+            continue;
+        }
+    }
     -1
 }
 
@@ -167,18 +220,32 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// YOUR JOB: Implement spawn.
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    let task_cur = current_task().unwrap();
+    let mut inner = task_cur.inner_exclusive_access();
+    if let Some(data) = get_app_data_by_name(path.as_str()) {
+        let new_task = TaskControlBlock::new(data);
+        let pid= new_task.getpid();
+        let arc_new_task = Arc::new(new_task);
+        inner.children.push(arc_new_task.clone());
+        add_task(arc_new_task);
+        // println!("{}",pid);
+        pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
 pub fn sys_set_priority(_prio: isize) -> isize {
-    trace!(
-        "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
-        current_task().unwrap().pid.0
-    );
-    -1
+    if _prio <= 1  {
+        return -1;
+    } 
+    let task_cur = current_task().unwrap();
+    let mut inner = & mut task_cur.inner_exclusive_access();
+    unsafe {
+        inner.pass = BIGSTRIDE/(_prio as usize);
+    }
+    _prio
 }
