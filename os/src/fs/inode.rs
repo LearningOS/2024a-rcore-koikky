@@ -4,14 +4,14 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::*;
-use easy_fs::{EasyFileSystem, Inode};
+use easy_fs::{EasyFileSystem, Inode, DiskInode, BLOCK_SZ};
 use lazy_static::*;
 
 /// inode in memory
@@ -20,21 +20,28 @@ use lazy_static::*;
 pub struct OSInode {
     readable: bool,
     writable: bool,
-    inner: UPSafeCell<OSInodeInner>,
+    pub inner: UPSafeCell<OSInodeInner>,
 }
 /// The OS inode inner in 'UPSafeCell'
 pub struct OSInodeInner {
     offset: usize,
-    inode: Arc<Inode>,
+    pub status: Stat,
+    pub inode: Arc<Inode>,
 }
 
 impl OSInode {
     /// create a new inode in memory
-    pub fn new(readable: bool, writable: bool, inode: Arc<Inode>) -> Self {
+    pub fn new(readable: bool, writable: bool, inode_id: usize, mode: StatMode, nlink: u32, inode: Arc<Inode>) -> Self {
         Self {
             readable,
             writable,
-            inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0, inode }) },
+            inner: unsafe { UPSafeCell::new(OSInodeInner { offset: 0,status: Stat{
+                dev: 0,
+                ino: inode_id as u64,
+                mode,
+                nlink,
+                pad: [0u64; 7],} 
+                , inode }) },
         }
     }
     /// read all data from the inode
@@ -100,6 +107,13 @@ impl OpenFlags {
     }
 }
 
+// extra
+pub fn id_find_indirect(id: usize, flags: OpenFlags, inode: Arc<Inode>) -> Option<Arc<OSInode>> {
+    let (readable, writable) = flags.read_write();
+    let link_count = ROOT_INODE.check_count_indirect(id as u32);
+    Some(Arc::new(OSInode::new(readable, writable, id, StatMode::FILE, link_count as u32, inode)))
+}
+
 /// Open a file
 pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     let (readable, writable) = flags.read_write();
@@ -107,19 +121,29 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
         if let Some(inode) = ROOT_INODE.find(name) {
             // clear size
             inode.clear();
-            Some(Arc::new(OSInode::new(readable, writable, inode)))
+            let sized = core::mem::size_of::<DiskInode>();
+            let id = ((inode.block_id - inode.fs.lock().inode_area_start_block as usize) * (BLOCK_SZ / sized)) + (inode.block_offset / sized);
+            let link_count = ROOT_INODE.check_count_indirect(id as u32);
+            Some(Arc::new(OSInode::new(readable, writable, id, StatMode::FILE, link_count as u32, inode)))
         } else {
             // create file
             ROOT_INODE
                 .create(name)
-                .map(|inode| Arc::new(OSInode::new(readable, writable, inode)))
+                .map(|inode| {
+                    let sized = core::mem::size_of::<DiskInode>();
+                    let id: usize = ((inode.block_id - inode.fs.lock().inode_area_start_block as usize) * (BLOCK_SZ / sized)) + (inode.block_offset / sized);
+                    Arc::new(OSInode::new(readable, writable, id, StatMode::FILE, 1, inode))
+                })
         }
     } else {
         ROOT_INODE.find(name).map(|inode| {
             if flags.contains(OpenFlags::TRUNC) {
                 inode.clear();
             }
-            Arc::new(OSInode::new(readable, writable, inode))
+            let sized = core::mem::size_of::<DiskInode>();
+            let id = ((inode.block_id - inode.fs.lock().inode_area_start_block as usize) * (BLOCK_SZ / sized)) + (inode.block_offset / sized);
+            let link_count = ROOT_INODE.check_count_indirect(id as u32);
+            Arc::new(OSInode::new(readable, writable, id, StatMode::FILE, link_count as u32, inode))
         })
     }
 }
@@ -154,5 +178,45 @@ impl File for OSInode {
             total_write_size += write_size;
         }
         total_write_size
+    }
+    
+    fn fd_stat(&self, stat: &mut Stat) -> usize {
+        let inner = self.inner.exclusive_access();
+        stat.dev = inner.status.dev;
+        stat.ino = inner.status.ino;
+        stat.mode = inner.status.mode;
+        stat.nlink = inner.status.nlink; 
+        // println!("stat.nlink: {}",inner.status.nlink);
+        0
+    }
+    fn fd_link(&self, name: &str) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let old_inode_id = inner.status.ino;
+        ROOT_INODE.inode_insert_indirectory(name, old_inode_id as usize);
+        // println!("inner.status.nlink: {}",inner.status.nlink);
+        0
+    }
+
+    fn fd_unlink(&self, name: &str) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let inode_id = inner.status.ino;
+        let link_count = ROOT_INODE.check_count_indirect(inode_id as u32);
+        // didn't consider recycle the data area when link_count < 2 
+        if link_count < 2 {
+            ROOT_INODE.delete_insert_indirectory(name)
+        } else {
+            ROOT_INODE.delete_insert_indirectory(name)
+        }
+    }
+
+    fn fd_identity(&self, id: usize, flag: &mut [bool]) -> bool {
+        let inner = self.inner.exclusive_access();
+        flag[0] = self.readable;
+        flag[1] = self.writable;
+        if inner.status.ino == (id as u64) {
+            true 
+        } else {
+            false
+        }
     }
 }

@@ -1,5 +1,5 @@
 //!Stdin & Stdout
-use super::File;
+use super::{File, Stat, OSInode};
 use crate::mm::UserBuffer;
 use crate::sbi::console_getchar;
 use crate::task::suspend_current_and_run_next;
@@ -39,6 +39,18 @@ impl File for Stdin {
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
     }
+    fn fd_stat(&self, stat: &mut Stat) -> usize {
+        0
+    }
+    fn fd_link(&self, name: &str) -> isize {
+        -1
+    }
+    fn fd_unlink(&self, name: &str) -> isize {
+        -1
+    }
+    fn fd_identity(&self, id: usize, flag: &mut [bool]) -> bool {
+        false
+    }
 }
 
 impl File for Stdout {
@@ -56,5 +68,17 @@ impl File for Stdout {
             print!("{}", core::str::from_utf8(*buffer).unwrap());
         }
         user_buf.len()
+    }
+    fn fd_stat(&self, stat: &mut Stat) -> usize {
+        0
+    }
+    fn fd_link(&self, name: &str) -> isize{
+        -1
+    }
+    fn fd_unlink(&self, name: &str) -> isize {
+        -1
+    }
+    fn fd_identity(&self, id: usize, flag: &mut [bool]) -> bool {
+        false
     }
 }
