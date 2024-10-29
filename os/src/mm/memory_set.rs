@@ -264,6 +264,12 @@ impl MemorySet {
         self.areas.clear();
     }
 
+    //extra
+    /// Translate a virtual page number to a page table entry
+    pub fn translate_va(&self, va: VirtAddr) -> Option<PhysAddr> {
+        self.page_table.translate_va(va)
+    }
+
     /// shrink the area to new_end
     #[allow(unused)]
     pub fn shrink_to(&mut self, start: VirtAddr, new_end: VirtAddr) -> bool {

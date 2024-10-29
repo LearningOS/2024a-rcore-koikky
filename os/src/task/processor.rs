@@ -52,6 +52,10 @@ lazy_static! {
 ///Loop `fetch_task` to get the process that needs to run, and switch the process through `__switch`
 pub fn run_tasks() {
     loop {
+        // let i = match current_task() {
+        //     Some(x) => Some(x.process.upgrade().unwrap().getpid()),
+        //     None => None,
+        // };
         let mut processor = PROCESSOR.exclusive_access();
         if let Some(task) = fetch_task() {
             let idle_task_cx_ptr = processor.get_idle_task_cx_ptr();
@@ -65,6 +69,9 @@ pub fn run_tasks() {
             processor.current = Some(task);
             // release processor manually
             drop(processor);
+            // if let Some(_) = i {
+            //     println!("next process{}",current_task().unwrap().process.upgrade().unwrap().getpid());
+            // }
             unsafe {
                 __switch(idle_task_cx_ptr, next_task_cx_ptr);
             }

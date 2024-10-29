@@ -2,6 +2,10 @@ use crate::sync::{Condvar, Mutex, MutexBlocking, MutexSpin, Semaphore};
 use crate::task::{block_current_and_run_next, current_process, current_task};
 use crate::timer::{add_timer, get_time_ms};
 use alloc::sync::Arc;
+
+// extra 
+use crate::sync::DeadlockDetect;
+
 /// sleep syscall
 pub fn sys_sleep(ms: usize) -> isize {
     trace!(
@@ -41,6 +45,7 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
         Some(Arc::new(MutexBlocking::new()))
     };
     let mut process_inner = process.inner_exclusive_access();
+    let mut re_id = 0;
     if let Some(id) = process_inner
         .mutex_list
         .iter()
@@ -49,11 +54,12 @@ pub fn sys_mutex_create(blocking: bool) -> isize {
         .map(|(id, _)| id)
     {
         process_inner.mutex_list[id] = mutex;
-        id as isize
+        re_id = id as isize;
     } else {
         process_inner.mutex_list.push(mutex);
-        process_inner.mutex_list.len() as isize - 1
+        re_id = process_inner.mutex_list.len() as isize - 1;
     }
+    return re_id
 }
 /// mutex lock syscall
 pub fn sys_mutex_lock(mutex_id: usize) -> isize {
@@ -73,8 +79,7 @@ pub fn sys_mutex_lock(mutex_id: usize) -> isize {
     let mutex = Arc::clone(process_inner.mutex_list[mutex_id].as_ref().unwrap());
     drop(process_inner);
     drop(process);
-    mutex.lock();
-    0
+    mutex.lock()
 }
 /// mutex unlock syscall
 pub fn sys_mutex_unlock(mutex_id: usize) -> isize {
@@ -166,8 +171,7 @@ pub fn sys_semaphore_down(sem_id: usize) -> isize {
     let process_inner = process.inner_exclusive_access();
     let sem = Arc::clone(process_inner.semaphore_list[sem_id].as_ref().unwrap());
     drop(process_inner);
-    sem.down();
-    0
+    sem.down()
 }
 /// condvar create syscall
 pub fn sys_condvar_create() -> isize {
@@ -246,6 +250,12 @@ pub fn sys_condvar_wait(condvar_id: usize, mutex_id: usize) -> isize {
 ///
 /// YOUR JOB: Implement deadlock detection, but might not all in this syscall
 pub fn sys_enable_deadlock_detect(_enabled: usize) -> isize {
-    trace!("kernel: sys_enable_deadlock_detect NOT IMPLEMENTED");
-    -1
+    let process = current_process();
+    let process_inner = process.inner_exclusive_access();
+    match _enabled {
+        0 => process_inner.deadlock_detect.disable_detect(),
+        1 => process_inner.deadlock_detect.enable_detect(),
+        _ => return -1,
+    };
+    return 0;
 }

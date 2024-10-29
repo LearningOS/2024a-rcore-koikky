@@ -111,6 +111,7 @@ pub fn sys_waittid(tid: usize) -> i32 {
     }
     if let Some(exit_code) = exit_code {
         // dealloc the exited thread
+        // println!("process{},exit_code:{}",process.getpid(),exit_code);
         process_inner.tasks[tid] = None;
         exit_code
     } else {
